@@ -1,0 +1,248 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * Main module file for user_statistic.
+ */
+
+/**
+ * Implements hook_init()
+ */
+function user_statistic_init() {
+  // set session, so we can track anonymous users
+  $_SESSION['anonymous-tracker'] = time();
+}
+
+function user_statistic_menu() {
+  $items = array();
+  // admin settings
+  $items['admin/config/people/user_statistic'] = array(
+    'title' => 'User statistic',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('user_statistic_admin_setting'),
+    'access arguments' => array('administer users'),
+    'file' => 'user_statistic.admin.inc',
+  );
+  // make settings the default task
+  $items['admin/config/user/user_statistic/settings'] = array(
+    'title' => 'Settings',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+
+  return $items;
+}
+/**
+ * Implement hook_block_info().
+ */
+function user_statistic_block_info() {
+  $blocks['user_statistic'] = array(
+    'info' => t('User statistic information'),
+  );
+  return $blocks;
+}
+
+/**
+ * Implement hook_block_view().
+ */
+function user_statistic_block_view($delta = '') {
+  global $user;
+  switch ($delta) {
+    case 'user_statistic':
+        $block = array(
+          'title' => t('User statistic'),
+          'content' => '<div>' . _user_statistic_get_user_statistic_block_content() . '</div>',
+        );
+        return $block;
+    break;
+  }
+  return NULL;
+}
+
+/**
+ * helper function to get block content
+ *
+ * @return string
+ *   html content
+ */
+function _user_statistic_get_user_statistic_block_content() {
+  // minimalistic permission check
+  if (user_access('access content')) {
+    // get settings
+    $setting_interval = REQUEST_TIME - variable_get('user_statistic_default_interval', 900);
+    $setting_max_users= variable_get('user_statistic_default_max_display', 100);
+    $setting_display_authenticated = variable_get('user_statistic_default_display_authenticated', TRUE);
+    $setting_display_guests = variable_get('user_statistic_default_display_guests', TRUE);
+    $setting_use_geoplugin = variable_get('user_statistic_default_use_geoplugin', TRUE);
+    $setting_display_spiders = variable_get('user_statistic_default_display_spiders', TRUE);
+    $setting_spiders = explode(',', variable_get('user_statistic_default_spiders', 'google, fatlens, yahoo, altavista, yandex, baidu, bing, thefind, bot, spider, crawl'));
+    $setting_table_output = variable_get('user_statistic_default_table_output', TRUE);
+
+    // gather data
+    $user_count_data = array();
+
+    // count overall users
+    $users = db_query('SELECT count(uid) FROM users')->fetchField();
+    // substract anonymous user
+    $users -= 1;
+    $user_count_data[] = array(
+      'name'   => t('Overall users count'),
+      'count'  => $users,
+    );
+
+    // get available user roles
+    $roles = user_roles();
+
+    // count users per role
+    foreach($roles as $rid => $role_name) {
+      // don't count anonymous and authenticated, this will be done separately
+      if ($rid != DRUPAL_ANONYMOUS_RID && $rid != DRUPAL_AUTHENTICATED_RID) {
+        $role_count = db_query('SELECT DISTINCT(COUNT(uid)) FROM users_roles WHERE rid = :rid', array(':rid' => $rid))->fetchField();
+        $user_count_data[] = array(
+          'name'   => t('Role') . ': ' . $role_name,
+          'count'  => $role_count,
+        );
+      }
+    }
+
+    // get authenticated users count who are online
+    $authenticated_count = db_query('SELECT COUNT(DISTINCT s.uid) FROM sessions s WHERE s.timestamp >= :timestamp AND s.uid > 0',
+      array(':timestamp' => $setting_interval))->fetchField();
+    $user_count_data[] = array(
+      'name'   => t('Online') . ': ' . $roles[DRUPAL_AUTHENTICATED_RID],
+      'count'  => $authenticated_count,
+    );
+
+    // get guests count
+    $guest_count = db_query('SELECT COUNT(DISTINCT s.hostname) FROM sessions s WHERE s.timestamp >= :timestamp and uid = 0', array(':timestamp' => $setting_interval))->fetchField();
+    $user_count_data[] = array(
+      'name'   => t('Online') . ': ' . $roles[DRUPAL_ANONYMOUS_RID],
+      'count'  => $guest_count,
+    );
+
+    if ($setting_display_authenticated) {
+      // get uid and name of registered users who are online
+      $query = db_select('users', 'u');
+      $query->join('sessions', 's', 'u.uid = s.uid');
+      $query->condition('s.timestamp', $setting_interval, '>=')
+        ->condition('s.uid', 0, '>')
+        ->fields('u', array('uid', 'name'));
+
+      if ($setting_max_users > 0) {
+        $query->range(0, $setting_max_users);
+      }
+
+      $users_online = $query->groupBy('u.uid')->execute()->fetchAll();
+
+      if ($users_online) {
+        $user_count_data[] = array(
+          'name'   => t('Registered users'),
+          'count'  => theme('user_list', array('users' => $users_online)),
+        );
+      }
+    }
+
+    // get guests and spiders who are online
+    $query = db_select('sessions', 's');
+    $query->condition('s.timestamp', $setting_interval, '>=')
+      ->condition('s.uid', 0);
+
+    if ($setting_max_users > 0) {
+      $query->range(0, $setting_max_users);
+    }
+
+    $query->addExpression('DISTINCT hostname', 'ip');
+    $guests = $query->execute()->fetchAll();
+
+    if ($guests) {
+      $guests_data = array();
+      $spiders_data = array();
+
+      foreach($guests as $guest) {
+        // determine hostname
+        $host = preg_replace('/[^a-zA-Z\.]/', '', gethostbyaddr($guest->ip));
+        if ($host == $guest->ip || $host == '' || !$host) {
+          $host = t('Unknown Hostname');
+        }
+        // ist it a spider or a guest?
+        if (in_array($host, $setting_spiders)) {
+          $spiders_data[] = array('ip'=>$guest->ip, 'host' => $host);
+        }
+        else {
+          $guests_data[] = array('ip' => $guest->ip, 'host' => $host);
+        }
+      }
+
+      // any guests online?
+      if ($setting_display_guests && $guests_data) {
+        $output = '';
+        foreach ($guests_data as $guest){
+          $output .= '<strong>' . $guest['host'] . '</strong>';
+          $output .= '<ul>';
+          $output .= '<li>' . $guest['ip'] . '</li>';
+
+          if ($setting_use_geoplugin) {
+            // try to get localization data
+            $loc = unserialize(file_get_contents('http://www.geoplugin.net/php.gp?ip=' . $guest['ip']));
+            if ($loc['geoplugin_city'] . $loc['geoplugin_region'] != ''){
+              $output .= '<li>' . $loc['geoplugin_city'] . ', ' . $loc['geoplugin_region'] . '</li>';
+            }
+            if ($loc['geoplugin_countryName'] != ''){
+              $output .= '<li>' . $loc['geoplugin_countryName'] . '</li>';
+            }
+          }
+
+          $output .= '</ul>';
+        }
+
+        $user_count_data[] = array(
+          'name'   => t('Guests'),
+          'count'  => $output,
+        );
+      }
+
+      // any spiders present?
+      if ($setting_display_spiders && $spiders_data) {
+        $output = '';
+        foreach ($spiders_data as $spider){
+          $output .= '<strong>' . $spider['host'] . '</strong>';
+          $output .= '<ul>';
+          $output .= '<li>' . $spider['ip'] . '</li>';
+          $output .= '</ul>';
+        }
+
+        $user_count_data[] = array(
+          'name'   => t('Spiders'),
+          'count'  => $output,
+        );
+      }
+    }
+
+    if ($setting_table_output) {
+      // themed table output
+      $header = array(
+        'name'   => array('data' => t('Description'), 'width' => '50%'),
+        'count'  => array('data' => t('Count/Users'), 'width' => '50%'),
+      );
+
+      $output = theme('table', array(
+        'header'      => $header,
+        'rows'        => $user_count_data,
+      ));
+    }
+    else {
+      // output as divs
+      $output = '';
+      foreach($user_count_data as $data) {
+        if ($data['name'] == t('Guests') || $data['name'] == t('Spiders')) {
+          $output .= '<div>' . $data['name'] . ':</div><div>' . $data['count'] . '</div>';
+        }
+        else {
+          $output .= '<div>' . $data['name'] . ': ' . $data['count'] . '</div>';
+        }
+      }
+    }
+
+    return $output;
+  }
+}
