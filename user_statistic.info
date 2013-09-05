@@ -1,0 +1,7 @@
+name = "User statistic"
+description = "For administrators: display user statistic in a block (user count by role, online users, guests)"
+core = "7.x"
+version = "7.x-1.x-dev"
+project = user_statistic
+
+files[] = user_statistic.module
