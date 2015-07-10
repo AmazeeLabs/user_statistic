@@ -95,13 +95,29 @@ function _user_statistic_get_user_statistic_block_content() {
 
     // count users per role
     foreach($roles as $rid => $role_name) {
-      // don't count anonymous and authenticated, this will be done separately
-      if ($rid != DRUPAL_ANONYMOUS_RID && $rid != DRUPAL_AUTHENTICATED_RID) {
-        $role_count = db_query('SELECT DISTINCT(COUNT(uid)) FROM users_roles WHERE rid = :rid', array(':rid' => $rid))->fetchField();
+      // The authenticated users are basically all the users which do not have
+      // any role.
+      if ($rid == DRUPAL_AUTHENTICATED_RID) {
+        $query = db_select('users', 'u');
+        $query->leftJoin('users_roles', 'ur', 'ur.uid = u.uid');
+        $query->condition('ur.rid')->condition('u.uid', 0, '>');
+        $query->addExpression('COUNT(DISTINCT(u.uid))', 'total_count');
+        $result = $query->execute()->fetch();
+
         $user_count_data[] = array(
           'name'   => t('Role') . ': ' . $role_name,
-          'count'  => $role_count,
+          'count'  => $result->total_count,
         );
+      }
+      else {
+        // don't count anonymous, this will be done separately
+        if ($rid != DRUPAL_ANONYMOUS_RID) {
+          $role_count = db_query('SELECT DISTINCT(COUNT(uid)) FROM users_roles WHERE rid = :rid', array(':rid' => $rid))->fetchField();
+          $user_count_data[] = array(
+            'name'   => t('Role') . ': ' . $role_name,
+            'count'  => $role_count,
+          );
+        }
       }
     }
 
