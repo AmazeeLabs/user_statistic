@@ -11,7 +11,8 @@
  */
 function user_statistic_init() {
   // set session, so we can track anonymous users
-  $_SESSION['anonymous-tracker'] = time();
+  // ~michael@amazeelabs.com: we do not need to track anonymous users.
+  //$_SESSION['anonymous-tracker'] = time();
 }
 
 function user_statistic_menu() {
